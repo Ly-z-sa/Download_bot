@@ -21,7 +21,6 @@ from telegram.ext import (
     filters
 )
 import yt_dlp
-from moviepy.editor import AudioFileClip
 
 # Load environment variables (for local development)
 load_dotenv()
