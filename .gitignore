@@ -1,0 +1,14 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Downloads
+downloads/
+temp/
+
+# Logs
+*.log
