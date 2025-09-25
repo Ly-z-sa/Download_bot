@@ -1,5 +1,5 @@
-python-telegram-bot==20.7
+python-telegram-bot==20.3
 yt-dlp==2023.12.30
 moviepy==1.0.3
 python-dotenv==1.0.0
-asyncio
+requests==2.31.0
