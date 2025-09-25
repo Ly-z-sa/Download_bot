@@ -563,26 +563,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main function
 def main():
     """Start the bot"""
-    # Create application
-    application = Application.builder().token(TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about_command))
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_link
-    ))
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
-    
-    # Start bot
-    print("🤖 Bot is starting...")
-    application.run_polling()
+    try:
+        # Create application
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("about", about_command))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_link
+        ))
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
+        # Start bot
+        print("🤖 Bot is starting...")
+        application.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        print(f"Bot crashed: {str(e)}")
+        print("Restarting in 5 seconds...")
+        import time
+        time.sleep(5)
+        main()  # Restart
 
 if __name__ == "__main__":
     main()
