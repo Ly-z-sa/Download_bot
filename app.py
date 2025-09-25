@@ -582,19 +582,7 @@ def main():
         
         # Start bot
         print("🤖 Bot is starting...")
-        
-        # Use webhook for Railway, polling for local
-        if os.getenv('RAILWAY_ENVIRONMENT'):
-            # Railway deployment - use webhook
-            PORT = int(os.getenv('PORT', 8000))
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                webhook_url=f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}"
-            )
-        else:
-            # Local development - use polling
-            application.run_polling(drop_pending_updates=True)
+        application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
         print(f"Bot crashed: {str(e)}")
