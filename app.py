@@ -23,11 +23,18 @@ from telegram.ext import (
 import yt_dlp
 from moviepy.editor import AudioFileClip
 
-# Load environment variables
+# Load environment variables (for local development)
 load_dotenv()
 
 # Configuration
 TOKEN = os.getenv('BOT_TOKEN')
+if not TOKEN:
+    print("ERROR: BOT_TOKEN environment variable not found!")
+    print("Local: Make sure .env file exists with BOT_TOKEN=your_token")
+    print("Railway: Add BOT_TOKEN in Variables section")
+    exit(1)
+
+print(f"Bot starting with token: {TOKEN[:10]}...")
 DOWNLOAD_DIR = "downloads"
 TEMP_DIR = "temp"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit
