@@ -622,21 +622,15 @@ def main():
         # Start bot
         print("🤖 Bot is starting...")
         
-        # Debug environment variables
-        print(f"PORT: {os.getenv('PORT')}")
-        print(f"RENDER_EXTERNAL_HOSTNAME: {os.getenv('RENDER_EXTERNAL_HOSTNAME')}")
-        
-        # Check if running on cloud (has PORT or RENDER env)
-        if os.getenv('PORT') or os.getenv('RENDER_EXTERNAL_HOSTNAME'):
-            # Cloud deployment - use webhook
-            PORT = int(os.getenv('PORT', 10000))
-            hostname = os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')
-            WEBHOOK_URL = f"https://{hostname}"
+        # Check if we're on Render
+        if os.getenv('PORT'):
+            PORT = int(os.getenv('PORT'))
+            WEBHOOK_URL = f"https://download-bot-tk0b.onrender.com"
             
-            print(f"Using webhook mode on port {PORT}")
+            print(f"RENDER DETECTED - Using webhook mode on port {PORT}")
             print(f"Webhook URL: {WEBHOOK_URL}/webhook")
             
-            # Start webhook server
+            # Use python-telegram-bot's built-in webhook server
             application.run_webhook(
                 listen="0.0.0.0",
                 port=PORT,
@@ -645,7 +639,7 @@ def main():
             )
         else:
             # Local development - use polling
-            print("Using polling mode (local)")
+            print("LOCAL DETECTED - Using polling mode")
             application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
