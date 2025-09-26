@@ -2,3 +2,5 @@ python-telegram-bot==21.9
 yt-dlp==2024.12.13
 python-dotenv==1.0.1
 requests==2.32.3
+fastapi
+uvicorn
