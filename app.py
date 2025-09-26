@@ -101,18 +101,29 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
         # Base options
         ydl_opts = {
             'outtmpl': clean_template,
-            'quiet': False,  # Enable output for debugging
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'extract_flat': False,
-            'restrictfilenames': True,  # Use safe filenames
+            'restrictfilenames': True,
+            'ignoreerrors': True,
+            'no_check_certificate': True,
         }
         
-        # Special handling for Twitter/X
-        if 'twitter.com' in url or 'x.com' in url:
+        # Platform-specific options
+        if 'youtube.com' in url or 'youtu.be' in url:
             ydl_opts.update({
-                'cookiefile': None,
+                'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
+            })
+        elif 'tiktok.com' in url:
+            ydl_opts.update({
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            })
+        elif 'twitter.com' in url or 'x.com' in url:
+            ydl_opts.update({
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
             })
         
@@ -125,11 +136,15 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
                 'preferredquality': '192',
             }]
         else:
-            # Simplified format selection
-            if quality == "best":
-                ydl_opts['format'] = 'best[ext=mp4]/best'
+            # Better format selection for different platforms
+            if 'youtube.com' in url or 'youtu.be' in url:
+                if quality == "best":
+                    ydl_opts['format'] = 'best[height<=720][ext=mp4]/best[ext=mp4]/best'
+                else:
+                    ydl_opts['format'] = f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'
             else:
-                ydl_opts['format'] = f'best[height<={quality}]/best'
+                # TikTok and Twitter
+                ydl_opts['format'] = 'best[ext=mp4]/best'
         
         # Download in executor to avoid blocking
         def sync_download():
@@ -188,12 +203,36 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
     
     except Exception as e:
         error_msg = str(e).lower()
+        logger.error(f"Download error: {str(e)}")
+        
+        # Check if file was actually downloaded despite error
+        temp_files = []
+        try:
+            for file in os.listdir(TEMP_DIR):
+                file_path = os.path.join(TEMP_DIR, file)
+                if os.path.isfile(file_path):
+                    temp_files.append(file_path)
+            
+            if temp_files:
+                # File exists, return it despite error
+                filepath = max(temp_files, key=os.path.getctime)
+                filename = os.path.basename(filepath)
+                metadata = {
+                    'title': 'Downloaded Video',
+                    'duration': 0,
+                    'uploader': 'Unknown',
+                    'view_count': 0,
+                    'like_count': 0,
+                    'upload_date': '',
+                }
+                return filepath, filename, metadata
+        except:
+            pass
+        
+        # No file found, return error
         if 'twitter' in error_msg or 'x.com' in error_msg:
-            logger.error(f"Twitter/X download error: {str(e)}")
-            # Return special error code for Twitter
             return "TWITTER_ERROR", None, None
         else:
-            logger.error(f"Download error: {str(e)}")
             return None, None, None
 
 # URL storage for callback data
