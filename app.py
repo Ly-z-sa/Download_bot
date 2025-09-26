@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import logging
+import shutil
 from typing import Optional, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
@@ -36,6 +37,17 @@ def root():
 def run_webserver():
     port = int(os.environ.get("PORT", 10000))  # Render sets $PORT
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+# Make sure cookies.txt is in a writable place
+SECRET_COOKIES = "/etc/secrets/cookies.txt"
+LOCAL_COOKIES = "cookies.txt"
+
+if os.path.exists(SECRET_COOKIES):
+    try:
+        shutil.copy(SECRET_COOKIES, LOCAL_COOKIES)
+        print("✅ Copied cookies.txt from /etc/secrets to local path")
+    except Exception as e:
+        print("⚠️ Failed to copy cookies.txt:", e)
 
 # --- Load environment variables ---
 try:
@@ -135,14 +147,14 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
                         'preferredquality': '128',
                     }],
                     'noplaylist': True,
-                    'cookiefile': '/etc/secrets/cookies.txt',
+                    'cookiefile': 'cookies.txt',
                 })
             else:
                 ydl_opts.update({
                     'format': 'bestvideo[height<=720]+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'noplaylist': True,
-                    'cookiefile': '/etc/secrets/cookies.txt',
+                    'cookiefile': 'cookies.txt',
                 })
         elif 'tiktok.com' in url:
             ydl_opts.update({
@@ -551,5 +563,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
