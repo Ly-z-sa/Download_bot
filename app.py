@@ -135,14 +135,15 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
                         'preferredquality': '128',
                     }],
                     'noplaylist': True,
+                    'cookiefile': '/etc/secrets/cookies.txt',
                 })
-            else:  # video
+            else:
                 ydl_opts.update({
                     'format': 'bestvideo[height<=720]+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'noplaylist': True,
+                    'cookiefile': '/etc/secrets/cookies.txt',
                 })
-
         elif 'tiktok.com' in url:
             ydl_opts.update({
                 'http_headers': {
@@ -550,4 +551,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
