@@ -599,7 +599,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # Main function
-async def main():
+def main():
     """Start the bot"""
     try:
         # Create application
@@ -628,9 +628,6 @@ async def main():
             PORT = int(os.getenv('PORT', 10000))
             WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}"
             
-            # Set webhook
-            await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-            
             # Start webhook server
             application.run_webhook(
                 listen="0.0.0.0",
@@ -650,5 +647,4 @@ async def main():
         main()  # Restart
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
