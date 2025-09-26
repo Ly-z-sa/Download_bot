@@ -106,12 +106,10 @@ def is_valid_url(url: str) -> Tuple[bool, str]:
 
 # Helper: Download with yt-dlp
 async def download_media(url: str, format_type: str = "video", quality: str = "best") -> Tuple[Optional[str], Optional[str], Optional[dict]]:
-    """Download media using yt-dlp"""
+    """Download media using yt-dlp (fixed for YouTube audio/video)"""
     try:
-        # Clean filename template
         clean_template = os.path.join(TEMP_DIR, '%(title).100s.%(ext)s')
         
-        # Optimized options for speed
         ydl_opts = {
             'outtmpl': clean_template,
             'quiet': True,
@@ -120,17 +118,31 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
             'restrictfilenames': True,
             'ignoreerrors': True,
             'no_check_certificate': True,
-            'concurrent_fragment_downloads': 4,  # Faster downloads
-            'retries': 1,  # Less retries = faster
+            'concurrent_fragment_downloads': 4,
+            'retries': 1,
             'fragment_retries': 1,
             'skip_unavailable_fragments': True,
         }
-        
+
         # Platform-specific options
         if 'youtube.com' in url or 'youtu.be' in url:
-            ydl_opts.update({
-                'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
-            })
+            if format_type == "audio":
+                ydl_opts.update({
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '128',
+                    }],
+                    'noplaylist': True,
+                })
+            else:  # video
+                ydl_opts.update({
+                    'format': 'bestvideo[height<=720]+bestaudio/best',
+                    'merge_output_format': 'mp4',
+                    'noplaylist': True,
+                })
+
         elif 'tiktok.com' in url:
             ydl_opts.update({
                 'http_headers': {
@@ -143,66 +155,42 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
             })
-        
-        # Simplified format selection for speed
-        if format_type == "audio":
-            ydl_opts['format'] = 'bestaudio'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '128',  # Lower quality = faster
-            }]
-        else:
-            # Fast video format selection
+
+        # For non-YouTube video formats (TikTok/X) keep your original logic
+        if format_type == "video" and 'youtube' not in url:
             if quality == "best":
                 ydl_opts['format'] = 'best[height<=720]/best'
             else:
                 ydl_opts['format'] = f'best[height<={quality}]/best'
-        
+
         # Download in executor to avoid blocking
         def sync_download():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 return info
-        
-        # Run download in thread pool
+
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, sync_download)
-        
-        # Get expected filename from yt-dlp
+
+        # Get filename
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             expected_path = ydl.prepare_filename(info)
-        
-        # Handle audio post-processing filename change
+
         if format_type == "audio":
-            base_path = os.path.splitext(expected_path)[0]
-            filepath = base_path + '.mp3'
+            filepath = os.path.splitext(expected_path)[0] + '.mp3'
         else:
             filepath = expected_path
-        
-        # If expected file doesn't exist, search for any recent file
+
         if not os.path.exists(filepath):
-            temp_files = []
-            for file in os.listdir(TEMP_DIR):
-                file_path = os.path.join(TEMP_DIR, file)
-                if os.path.isfile(file_path):
-                    temp_files.append(file_path)
-            
+            temp_files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR) if os.path.isfile(os.path.join(TEMP_DIR, f))]
             if temp_files:
-                # Get the most recently created file
                 filepath = max(temp_files, key=os.path.getctime)
             else:
                 logger.error(f"No files found in {TEMP_DIR}")
                 return None, None, None
-        
+
         filename = os.path.basename(filepath)
-        
-        # Final check
-        if not os.path.exists(filepath):
-            logger.error(f"Downloaded file not found: {filepath}")
-            return None, None, None
-        
-        # Get metadata
+
         metadata = {
             'title': info.get('title', 'Unknown'),
             'duration': info.get('duration', 0),
@@ -211,42 +199,17 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
             'like_count': info.get('like_count', 0),
             'upload_date': info.get('upload_date', ''),
         }
-        
+
         return filepath, filename, metadata
-    
+
     except Exception as e:
-        error_msg = str(e).lower()
         logger.error(f"Download error: {str(e)}")
-        
-        # Check if file was actually downloaded despite error
-        temp_files = []
-        try:
-            for file in os.listdir(TEMP_DIR):
-                file_path = os.path.join(TEMP_DIR, file)
-                if os.path.isfile(file_path):
-                    temp_files.append(file_path)
-            
-            if temp_files:
-                # File exists, return it despite error
-                filepath = max(temp_files, key=os.path.getctime)
-                filename = os.path.basename(filepath)
-                metadata = {
-                    'title': 'Downloaded Video',
-                    'duration': 0,
-                    'uploader': 'Unknown',
-                    'view_count': 0,
-                    'like_count': 0,
-                    'upload_date': '',
-                }
-                return filepath, filename, metadata
-        except:
-            pass
-        
-        # No file found, return error
+        error_msg = str(e).lower()
+
         if 'twitter' in error_msg or 'x.com' in error_msg:
             return "TWITTER_ERROR", None, None
-        else:
-            return None, None, None
+
+        return None, None, None
 
 # URL storage for callback data
 url_storage = {}
@@ -587,3 +550,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
