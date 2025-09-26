@@ -599,7 +599,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # Main function
-def main():
+async def main():
     """Start the bot"""
     try:
         # Create application
@@ -621,7 +621,26 @@ def main():
         
         # Start bot
         print("🤖 Bot is starting...")
-        application.run_polling(drop_pending_updates=True)
+        
+        # Check if running on Render (has PORT environment variable)
+        if os.getenv('PORT'):
+            # Render deployment - use webhook
+            PORT = int(os.getenv('PORT', 10000))
+            WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}"
+            
+            # Set webhook
+            await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            
+            # Start webhook server
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path="/webhook",
+                webhook_url=f"{WEBHOOK_URL}/webhook"
+            )
+        else:
+            # Local development - use polling
+            application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
         print(f"Bot crashed: {str(e)}")
@@ -631,4 +650,5 @@ def main():
         main()  # Restart
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
