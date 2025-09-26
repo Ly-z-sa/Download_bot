@@ -138,7 +138,7 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
 
         # Platform-specific options
        if 'youtube.com' in url or 'youtu.be' in url:
-            cookie_path = os.getenv("YOUTUBE_COOKIE_PATH", "cookies.txt")  # Use env var or default
+           cookie_path = os.getenv("YOUTUBE_COOKIE_PATH", "cookies.txt")  # Use env var or default
             if format_type == "audio":
                 ydl_opts.update({
                     'format': 'bestaudio/best',  # fallback to best if not exactly available
@@ -565,6 +565,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
