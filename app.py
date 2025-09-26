@@ -2,13 +2,14 @@ import os
 import re
 import asyncio
 import logging
+import threading
 from typing import Optional, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
 
 from telegram import (
-    Update, 
-    InlineKeyboardButton, 
+    Update,
+    InlineKeyboardButton,
     InlineKeyboardMarkup,
     constants
 )
@@ -22,18 +23,21 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# Load environment variables (for local development)
-load_dotenv()
+# --- NEW IMPORTS FOR RENDER ---
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 
-# Configuration
+
+# Load environment variables (for local development only)
+try:
+    load_dotenv()
+except:
+    pass
+
 TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
     print("ERROR: BOT_TOKEN environment variable not found!")
-    print("Local: Make sure .env file exists with BOT_TOKEN=your_token")
-    print("Railway: Add BOT_TOKEN in Variables section")
     exit(1)
 
-print(f"Bot starting with token: {TOKEN[:10]}...")
 DOWNLOAD_DIR = "downloads"
 TEMP_DIR = "temp"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit
@@ -49,23 +53,21 @@ logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Helper: Clean filename
+
+# --- Helpers ---
 def clean_filename(filename: str) -> str:
-    """Remove invalid characters from filename"""
     return re.sub(r'[<>:"/\\|?*]', '', filename)[:100]
 
-# Helper: Format file size
+
 def format_size(bytes: int) -> str:
-    """Convert bytes to human readable format"""
     for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes < 1024.0:
             return f"{bytes:.1f} {unit}"
         bytes /= 1024.0
     return f"{bytes:.1f} TB"
 
-# Helper: Validate URL
+
 def is_valid_url(url: str) -> Tuple[bool, str]:
-    """Check if URL is from supported platform"""
     youtube_patterns = [
         r'(https?://)?(www\.)?(youtube\.com|youtu\.be|m\.youtube\.com)/',
         r'(https?://)?(www\.)?(youtube\.com/shorts/)',
@@ -76,120 +78,71 @@ def is_valid_url(url: str) -> Tuple[bool, str]:
     twitter_patterns = [
         r'(https?://)?(www\.)?(twitter\.com|x\.com)/',
     ]
-    
+
     for pattern in youtube_patterns:
         if re.search(pattern, url, re.IGNORECASE):
             return True, "youtube"
-    
     for pattern in tiktok_patterns:
         if re.search(pattern, url, re.IGNORECASE):
             return True, "tiktok"
-    
     for pattern in twitter_patterns:
         if re.search(pattern, url, re.IGNORECASE):
             return True, "twitter"
-    
     return False, None
 
-# Helper: Download with yt-dlp
+
 async def download_media(url: str, format_type: str = "video", quality: str = "best") -> Tuple[Optional[str], Optional[str], Optional[dict]]:
-    """Download media using yt-dlp"""
     try:
-        # Clean filename template
         clean_template = os.path.join(TEMP_DIR, '%(title).100s.%(ext)s')
-        
-        # Base options
         ydl_opts = {
             'outtmpl': clean_template,
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
             'restrictfilenames': True,
             'ignoreerrors': True,
             'no_check_certificate': True,
+            'concurrent_fragment_downloads': 4,
+            'retries': 1,
+            'fragment_retries': 1,
+            'skip_unavailable_fragments': True,
         }
-        
-        # Platform-specific options
+
         if 'youtube.com' in url or 'youtu.be' in url:
+            ydl_opts.update({'extractor_args': {'youtube': {'skip': ['dash', 'hls']}}})
+        elif 'tiktok.com' in url or 'twitter.com' in url or 'x.com' in url:
             ydl_opts.update({
-                'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
+                'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             })
-        elif 'tiktok.com' in url:
-            ydl_opts.update({
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            })
-        elif 'twitter.com' in url or 'x.com' in url:
-            ydl_opts.update({
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            })
-        
-        # Format selection based on type
+
         if format_type == "audio":
-            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['format'] = 'bestaudio'
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192',
+                'preferredquality': '128',
             }]
         else:
-            # Better format selection for different platforms
-            if 'youtube.com' in url or 'youtu.be' in url:
-                if quality == "best":
-                    ydl_opts['format'] = 'best[height<=720][ext=mp4]/best[ext=mp4]/best'
-                else:
-                    ydl_opts['format'] = f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'
-            else:
-                # TikTok and Twitter
-                ydl_opts['format'] = 'best[ext=mp4]/best'
-        
-        # Download in executor to avoid blocking
+            ydl_opts['format'] = 'best[height<=720]/best' if quality == "best" else f'best[height<={quality}]/best'
+
         def sync_download():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 return info
-        
-        # Run download in thread pool
+
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, sync_download)
-        
-        # Get expected filename from yt-dlp
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             expected_path = ydl.prepare_filename(info)
-        
-        # Handle audio post-processing filename change
-        if format_type == "audio":
-            base_path = os.path.splitext(expected_path)[0]
-            filepath = base_path + '.mp3'
-        else:
-            filepath = expected_path
-        
-        # If expected file doesn't exist, search for any recent file
+
+        filepath = expected_path if format_type != "audio" else os.path.splitext(expected_path)[0] + '.mp3'
         if not os.path.exists(filepath):
-            temp_files = []
-            for file in os.listdir(TEMP_DIR):
-                file_path = os.path.join(TEMP_DIR, file)
-                if os.path.isfile(file_path):
-                    temp_files.append(file_path)
-            
-            if temp_files:
-                # Get the most recently created file
-                filepath = max(temp_files, key=os.path.getctime)
-            else:
-                logger.error(f"No files found in {TEMP_DIR}")
+            files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR)]
+            filepath = max(files, key=os.path.getctime) if files else None
+            if not filepath:
                 return None, None, None
-        
+
         filename = os.path.basename(filepath)
-        
-        # Final check
-        if not os.path.exists(filepath):
-            logger.error(f"Downloaded file not found: {filepath}")
-            return None, None, None
-        
-        # Get metadata
         metadata = {
             'title': info.get('title', 'Unknown'),
             'duration': info.get('duration', 0),
@@ -198,456 +151,143 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
             'like_count': info.get('like_count', 0),
             'upload_date': info.get('upload_date', ''),
         }
-        
         return filepath, filename, metadata
-    
-    except Exception as e:
-        error_msg = str(e).lower()
-        logger.error(f"Download error: {str(e)}")
-        
-        # Check if file was actually downloaded despite error
-        temp_files = []
-        try:
-            for file in os.listdir(TEMP_DIR):
-                file_path = os.path.join(TEMP_DIR, file)
-                if os.path.isfile(file_path):
-                    temp_files.append(file_path)
-            
-            if temp_files:
-                # File exists, return it despite error
-                filepath = max(temp_files, key=os.path.getctime)
-                filename = os.path.basename(filepath)
-                metadata = {
-                    'title': 'Downloaded Video',
-                    'duration': 0,
-                    'uploader': 'Unknown',
-                    'view_count': 0,
-                    'like_count': 0,
-                    'upload_date': '',
-                }
-                return filepath, filename, metadata
-        except:
-            pass
-        
-        # No file found, return error
-        if 'twitter' in error_msg or 'x.com' in error_msg:
-            return "TWITTER_ERROR", None, None
-        else:
-            return None, None, None
 
-# URL storage for callback data
+    except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        return None, None, None
+
+
+# --- URL storage for callbacks ---
 url_storage = {}
 
-# Helper: Create quality keyboard
+
 def create_quality_keyboard(url: str, platform: str) -> InlineKeyboardMarkup:
-    """Create inline keyboard for quality selection"""
-    # Create short hash for URL to avoid callback data length limit
-    url_hash = str(hash(url))[-8:]  # Use last 8 chars of hash
+    url_hash = str(hash(url))[-8:]
     url_storage[url_hash] = url
-    
-    keyboard = []
-    
+
     if platform == "youtube":
         keyboard = [
-            [
-                InlineKeyboardButton("📹 Best Video", callback_data=f"dl|video|best|{url_hash}"),
-                InlineKeyboardButton("🎵 Audio Only", callback_data=f"dl|audio|best|{url_hash}")
-            ],
-            [
-                InlineKeyboardButton("720p", callback_data=f"dl|video|720|{url_hash}"),
-                InlineKeyboardButton("480p", callback_data=f"dl|video|480|{url_hash}"),
-                InlineKeyboardButton("360p", callback_data=f"dl|video|360|{url_hash}")
-            ],
+            [InlineKeyboardButton("📹 Best Video", callback_data=f"dl|video|best|{url_hash}"),
+             InlineKeyboardButton("🎵 Audio Only", callback_data=f"dl|audio|best|{url_hash}")],
+            [InlineKeyboardButton("720p", callback_data=f"dl|video|720|{url_hash}"),
+             InlineKeyboardButton("480p", callback_data=f"dl|video|480|{url_hash}"),
+             InlineKeyboardButton("360p", callback_data=f"dl|video|360|{url_hash}")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
         ]
-    elif platform == "twitter":
+    else:
         keyboard = [
-            [
-                InlineKeyboardButton("📹 Download Video", callback_data=f"dl|video|best|{url_hash}"),
-                InlineKeyboardButton("🎵 Audio Only", callback_data=f"dl|audio|best|{url_hash}")
-            ],
+            [InlineKeyboardButton("📹 Download Video", callback_data=f"dl|video|best|{url_hash}"),
+             InlineKeyboardButton("🎵 Audio Only", callback_data=f"dl|audio|best|{url_hash}")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
         ]
-    else:  # TikTok
-        keyboard = [
-            [
-                InlineKeyboardButton("📹 Download Video", callback_data=f"dl|video|best|{url_hash}"),
-                InlineKeyboardButton("🎵 Audio Only", callback_data=f"dl|audio|best|{url_hash}")
-            ],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-        ]
-    
     return InlineKeyboardMarkup(keyboard)
 
-# Command: /start
+
+# --- Commands ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message"""
-    welcome_text = (
-        "🎬 *Welcome to Video Downloader Bot!*\n\n"
-        "I can download videos from:\n"
-        "• YouTube (including Shorts)\n"
-        "• TikTok\n"
-        "• Twitter/X\n\n"
-        "*How to use:*\n"
-        "1️⃣ Send me a video link\n"
-        "2️⃣ Choose quality/format\n"
-        "3️⃣ Get your file!\n\n"
-        "📝 *Commands:*\n"
-        "/start - Show this message\n"
-        "/help - Get help\n"
-        "/about - About this bot\n\n"
-        "Just send me a link to get started! 🚀"
-    )
-    
     await update.message.reply_text(
-        welcome_text,
-        parse_mode=constants.ParseMode.MARKDOWN
+        "🎬 Welcome! Send me a YouTube, TikTok, or Twitter/X link and I'll fetch it."
     )
 
-# Command: /help
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send help message"""
-    help_text = (
-        "❓ *Help & FAQ*\n\n"
-        "*Supported Links:*\n"
-        "• YouTube videos & shorts\n"
-        "• TikTok videos\n"
-        "• Twitter/X videos\n\n"
-        "*File Size Limit:*\n"
-        "Maximum 50MB (Telegram limit)\n\n"
-        "*Troubleshooting:*\n"
-        "• Make sure the link is public\n"
-        "• Try different quality if download fails\n"
-        "• Some videos may be region-locked\n\n"
-        "*Tips:*\n"
-        "• Lower quality = smaller file size\n"
-        "• Audio-only is fastest to download\n"
-        "• Be patient with long videos\n\n"
-        "Need more help? Contact @Ly\_z\_sa"
-    )
-    
     await update.message.reply_text(
-        help_text,
-        parse_mode=constants.ParseMode.MARKDOWN
+        "Send me a valid YouTube, TikTok, or Twitter/X link. I’ll give you quality options."
     )
 
-# Command: /about
+
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send about message"""
-    about_text = (
-        "ℹ️ *About This Bot*\n\n"
-        "Version: 2.3\n"
-        "Updated: September 2025\n\n"
-        "This bot helps you download videos from various platforms "
-        "directly to Telegram.\n\n"
-        "*Features:*\n"
-        "✅ Multiple quality options\n"
-        "✅ Audio extraction\n"
-        "✅ Fast processing\n"
-        "✅ Clean interface\n\n"
-        "*Privacy:*\n"
-        "• No data is stored\n"
-        "• Files are deleted after sending\n"
-        "• No logs are kept\n\n"
-        "Made with ❤️ by @Ly\_z\_sa"
-    )
-    
-    await update.message.reply_text(
-        about_text,
-        parse_mode=constants.ParseMode.MARKDOWN
-    )
+    await update.message.reply_text("ℹ️ Simple video downloader bot. Made for Render demo 🚀")
 
-# Handler: Process links
+
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process video links"""
-    message = update.message
-    url = message.text.strip()
-    
-    # Validate URL
+    url = update.message.text.strip()
     is_valid, platform = is_valid_url(url)
-    
     if not is_valid:
-        await message.reply_text(
-            "❌ *Invalid or unsupported link!*\n\n"
-            "Please send a valid YouTube, TikTok or Twitter/X link.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
+        await update.message.reply_text("❌ Unsupported link! Only YouTube/TikTok/Twitter.")
         return
-    
-    # Send processing message
-    processing_msg = await message.reply_text(
-        f"🔍 *Detected {platform.title()} link*\n"
-        "Fetching video information...",
-        parse_mode=constants.ParseMode.MARKDOWN
+    await update.message.reply_text(
+        f"📹 {platform.title()} video detected! Choose option:",
+        reply_markup=create_quality_keyboard(url, platform)
     )
-    
-    # Try to get video info first
-    try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            video_title = info.get('title', 'Unknown')
-            video_duration = info.get('duration', 0)
-            
-            # Format duration
-            if video_duration:
-                mins, secs = divmod(video_duration, 60)
-                duration_str = f"{mins}:{secs:02d}"
-            else:
-                duration_str = "Unknown"
-        
-        # Update message with video info
-        try:
-            await processing_msg.edit_text(
-                f"📹 *{video_title}*\n"
-                f"⏱ Duration: {duration_str}\n\n"
-                "Please choose download option:",
-                parse_mode=constants.ParseMode.MARKDOWN,
-                reply_markup=create_quality_keyboard(url, platform)
-            )
-        except Exception as edit_error:
-            logger.error(f"Error editing message: {str(edit_error)}")
-            # Try to send new message if edit fails
-            await message.reply_text(
-                f"📹 *{video_title}*\n"
-                f"⏱ Duration: {duration_str}\n\n"
-                "Please choose download option:",
-                parse_mode=constants.ParseMode.MARKDOWN,
-                reply_markup=create_quality_keyboard(url, platform)
-            )
-    
-    except Exception as e:
-        logger.error(f"Error fetching video info: {str(e)}")
-        try:
-            await processing_msg.edit_text(
-                "⚠️ *Could not fetch video information*\n"
-                "But you can still try to download:",
-                parse_mode=constants.ParseMode.MARKDOWN,
-                reply_markup=create_quality_keyboard(url, platform)
-            )
-        except:
-            # If edit fails, send new message
-            await message.reply_text(
-                "⚠️ *Could not fetch video information*\n"
-                "But you can still try to download:",
-                parse_mode=constants.ParseMode.MARKDOWN,
-                reply_markup=create_quality_keyboard(url, platform)
-            )
 
-# Handler: Callback queries
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline keyboard callbacks"""
     query = update.callback_query
     await query.answer()
-    
+
     data = query.data
-    
-    # Handle cancel
     if data == "cancel":
-        await query.message.edit_text("❌ Download cancelled.")
+        await query.message.edit_text("❌ Cancelled.")
         return
-    
-    # Parse callback data
-    parts = data.split("|")
-    if len(parts) != 4 or parts[0] != "dl":
-        return
-    
-    _, format_type, quality, url_hash = parts
-    
-    # Get URL from storage
+
+    _, format_type, quality, url_hash = data.split("|")
     url = url_storage.get(url_hash)
     if not url:
-        await query.message.edit_text(
-            "❌ *Session expired!*\n"
-            "Please send the link again.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
+        await query.message.edit_text("❌ Session expired. Send the link again.")
         return
-    
-    # Update message
-    await query.message.edit_text(
-        f"⬇️ *Downloading...*\n"
-        f"Format: {format_type.title()}\n"
-        f"Quality: {quality.upper() if quality != 'best' else 'Best available'}\n\n"
-        f"Please wait, this may take a moment...",
-        parse_mode=constants.ParseMode.MARKDOWN
-    )
-    
-    # Download file
+
+    await query.message.edit_text("⬇️ Downloading... Please wait.")
     filepath, filename, metadata = await download_media(url, format_type, quality)
-    
-    # Handle Twitter/X specific errors
-    if filepath == "TWITTER_ERROR":
-        await query.message.edit_text(
-            "❌ *Twitter/X Download Failed!*\n\n"
-            "Twitter/X has restricted access for downloaders.\n\n"
-            "*Alternatives:*\n"
-            "• Try a different Twitter video\n"
-            "• Use YouTube or TikTok instead\n"
-            "• Some Twitter videos may work, others won't\n\n"
-            "This is due to Twitter's anti-bot measures.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
+
+    if not filepath:
+        await query.message.edit_text("❌ Download failed.")
         return
-    
-    if not filepath or not os.path.exists(filepath):
-        await query.message.edit_text(
-            "❌ *Download failed!*\n\n"
-            "Possible reasons:\n"
-            "• Video is private or deleted\n"
-            "• Network error\n"
-            "• Video is region-locked\n\n"
-            "Please try again or use different quality.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
-        return
-    
-    # Check file size
+
     file_size = os.path.getsize(filepath)
     if file_size > MAX_FILE_SIZE:
         os.remove(filepath)
-        await query.message.edit_text(
-            f"❌ *File too large!*\n\n"
-            f"File size: {format_size(file_size)}\n"
-            f"Telegram limit: {format_size(MAX_FILE_SIZE)}\n\n"
-            "Try downloading with lower quality.",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
+        await query.message.edit_text("❌ File too large for Telegram (50MB limit).")
         return
-    
-    # Prepare caption
-    caption = (
-        f"✅ *{metadata['title']}*\n"
-        f"👤 {metadata['uploader']}\n"
-        f"📊 {format_size(file_size)}"
-    )
-    
-    # Send file
-    upload_success = False
-    try:
-        await query.message.edit_text(
-            "📤 *Uploading to Telegram...*",
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
-        
-        with open(filepath, 'rb') as file_obj:
-            if format_type == "audio":
-                await context.bot.send_audio(
-                    chat_id=query.message.chat_id,
-                    audio=file_obj,
-                    caption=caption,
-                    parse_mode=constants.ParseMode.MARKDOWN,
-                    title=metadata['title'][:100],
-                    performer=metadata['uploader'][:100],
-                    filename=filename
-                )
-            else:
-                await context.bot.send_video(
-                    chat_id=query.message.chat_id,
-                    video=file_obj,
-                    caption=caption,
-                    parse_mode=constants.ParseMode.MARKDOWN,
-                    supports_streaming=True,
-                    filename=filename
-                )
-        
-        upload_success = True
-        # Delete the status message after successful upload
-        try:
-            await query.message.delete()
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Upload error: {str(e)}")
-        # Only show error if upload actually failed
-        try:
-            await query.message.edit_text(
-                "❌ *Upload failed!*\n"
-                "Please try again later.",
-                parse_mode=constants.ParseMode.MARKDOWN
-            )
-        except:
-            pass
-    
-    finally:
-        # Clean up
-        if os.path.exists(filepath):
-            os.remove(filepath)
 
-# Handler: Unknown commands
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle unknown commands"""
-    await update.message.reply_text(
-        "❓ Unknown command. Use /help for available commands."
-    )
+    caption = f"✅ {metadata['title']}\n👤 {metadata['uploader']}\n📊 {format_size(file_size)}"
 
-# Error handler
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Log errors"""
+    with open(filepath, "rb") as f:
+        if format_type == "audio":
+            await context.bot.send_audio(chat_id=query.message.chat_id, audio=f, caption=caption)
+        else:
+            await context.bot.send_video(chat_id=query.message.chat_id, video=f, caption=caption)
+
+    os.remove(filepath)
     try:
-        logger.error(f"Update {update} caused error {context.error}")
-        
-        if update and update.message:
-            try:
-                await update.message.reply_text(
-                    "⚠️ An error occurred. Please try again later."
-                )
-            except:
-                pass  # Ignore if we can't send error message
-    except Exception as e:
-        logger.error(f"Error in error handler: {str(e)}")
+        await query.message.delete()
+    except:
         pass
 
-# Main function
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❓ Unknown command. Use /help.")
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+
+
+# --- Dummy web server for Render ---
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    print(f"🌐 Dummy server running on port {port}")
+    server.serve_forever()
+
+
+# --- Main ---
 def main():
-    """Start the bot"""
-    try:
-        # Create application
-        application = Application.builder().token(TOKEN).build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("about", about_command))
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_link
-        ))
-        application.add_handler(CallbackQueryHandler(handle_callback))
-        application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-        
-        # Add error handler
-        application.add_error_handler(error_handler)
-        
-        # Start bot
-        print("🤖 Bot is starting...")
-        
-        # Check if we're on Render
-        if os.getenv('PORT'):
-            PORT = int(os.getenv('PORT'))
-            WEBHOOK_URL = f"https://download-bot-tk0b.onrender.com"
-            
-            print(f"RENDER DETECTED - Using webhook mode on port {PORT}")
-            print(f"Webhook URL: {WEBHOOK_URL}/webhook")
-            
-            # Use python-telegram-bot's built-in webhook server
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path="/webhook",
-                webhook_url=f"{WEBHOOK_URL}/webhook"
-            )
-        else:
-            # Local development - use polling
-            print("LOCAL DETECTED - Using polling mode")
-            application.run_polling(drop_pending_updates=True)
-        
-    except Exception as e:
-        print(f"Bot crashed: {str(e)}")
-        print("Restarting in 5 seconds...")
-        import time
-        time.sleep(5)
-        main()  # Restart
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    application.add_error_handler(error_handler)
+
+    print("🤖 Bot is starting (polling mode)...")
+    application.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
