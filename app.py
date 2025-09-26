@@ -137,25 +137,27 @@ async def download_media(url: str, format_type: str = "video", quality: str = "b
         }
 
         # Platform-specific options
-        if 'youtube.com' in url or 'youtu.be' in url:
+       if 'youtube.com' in url or 'youtu.be' in url:
+            cookie_path = os.getenv("YOUTUBE_COOKIE_PATH", "cookies.txt")  # Use env var or default
             if format_type == "audio":
                 ydl_opts.update({
-                    'format': 'bestaudio/best',
+                    'format': 'bestaudio/best',  # fallback to best if not exactly available
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
                         'preferredquality': '128',
                     }],
                     'noplaylist': True,
-                    'cookiefile': 'cookies.txt',
+                    'cookiefile': cookie_path,
                 })
             else:
                 ydl_opts.update({
-                    'format': 'bestvideo[height<=720]+bestaudio/best',
+                    'format': 'bestvideo+bestaudio/best',  # try best video+audio, fallback to best
                     'merge_output_format': 'mp4',
                     'noplaylist': True,
-                    'cookiefile': 'cookies.txt',
+                    'cookiefile': cookie_path,
                 })
+
         elif 'tiktok.com' in url:
             ydl_opts.update({
                 'http_headers': {
@@ -563,6 +565,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
